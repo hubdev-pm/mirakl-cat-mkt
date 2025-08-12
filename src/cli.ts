@@ -222,6 +222,78 @@ For more information, visit: https://github.com/your-repo/xlsx-database-migratio
   }
 
   /**
+   * Displays migration results to the console
+   * @param summary - Migration summary
+   * @param options - CLI options
+   */
+  private displayMigrationResults(summary: any, options: CLIOptions): void {
+    console.log('\n' + '='.repeat(60));
+    console.log('MIGRATION RESULTS');
+    console.log('='.repeat(60));
+
+    if (options.configOnly) {
+      console.log('✅ Configuration setup completed successfully');
+      console.log('Database and configuration tables are ready for migration.');
+      return;
+    }
+
+    if (summary.success) {
+      console.log('✅ MIGRATION COMPLETED SUCCESSFULLY');
+    } else {
+      console.log('❌ MIGRATION COMPLETED WITH ERRORS');
+    }
+
+    console.log('');
+    console.log(`📊 Summary:`);
+    console.log(`   Tables Processed: ${summary.tablesProcessed}/${summary.totalTables}`);
+    console.log(`   Records Migrated: ${summary.recordsMigrated.toLocaleString()}`);
+    console.log(`   Records Skipped:  ${summary.recordsSkipped.toLocaleString()}`);
+    console.log(`   Total Errors:     ${summary.totalErrors}`);
+    console.log(`   Duration:         ${(summary.duration / 1000).toFixed(2)}s`);
+
+    if (options.dryRun) {
+      console.log('\n🔍 DRY RUN MODE - No actual database changes were made');
+    }
+
+    // Display table-specific results
+    if (summary.tableResults && summary.tableResults.length > 0) {
+      console.log('\n📋 Table Results:');
+      
+      for (const result of summary.tableResults) {
+        const status = result.errors.length === 0 ? '✅' : '❌';
+        console.log(`   ${status} ${result.tableName}:`);
+        console.log(`      Inserted: ${result.recordsInserted.toLocaleString()}`);
+        console.log(`      Skipped:  ${result.recordsSkipped.toLocaleString()}`);
+        
+        if (result.errors.length > 0) {
+          console.log(`      Errors:   ${result.errors.length}`);
+          if (options.verbose) {
+            result.errors.slice(0, 3).forEach((error, index) => {
+              console.log(`        ${index + 1}. ${error}`);
+            });
+            if (result.errors.length > 3) {
+              console.log(`        ... and ${result.errors.length - 3} more errors`);
+            }
+          }
+        }
+        
+        console.log(`      Duration: ${(result.duration / 1000).toFixed(2)}s`);
+      }
+    }
+
+    console.log('='.repeat(60));
+
+    if (summary.success) {
+      console.log('\n🎉 All data has been migrated successfully with zero data loss!');
+    } else {
+      console.log('\n⚠️  Migration completed with errors. Check the logs for details.');
+      if (!options.verbose) {
+        console.log('   Run with --verbose for detailed error information.');
+      }
+    }
+  }
+
+  /**
    * Main CLI entry point
    * @param args - Command line arguments
    */
@@ -246,17 +318,31 @@ For more information, visit: https://github.com/your-repo/xlsx-database-migratio
 
       Logger.info('CLI validation passed, starting migration process');
 
-      // TODO: Import and run the main migration logic
-      // const migrationService = new MigrationService(this.errorCollector);
-      // await migrationService.run(options);
+      // Import and run the main migration logic
+      const { MigrationService } = await import('../services/migration-service');
+      const migrationService = new MigrationService(this.errorCollector);
 
-      // For now, just show that CLI parsing works
-      console.log('CLI setup completed successfully!');
-      console.log('Migration logic will be implemented in the next phase.');
+      try {
+        // Execute the complete migration
+        const summary = await migrationService.executeMigration(options);
 
-      this.errorCollector.logFinalReport();
+        // Display results
+        this.displayMigrationResults(summary, options);
 
-      return this.errorCollector.hasErrors() ? 1 : 0;
+        // Cleanup resources
+        await migrationService.cleanup();
+
+        return summary.success && !this.errorCollector.hasErrors() ? 0 : 1;
+
+      } catch (error: any) {
+        Logger.error('Migration execution failed', { error: error.message });
+        console.error(`\nMigration failed: ${error.message}`);
+        
+        await migrationService.cleanup();
+        return 1;
+      } finally {
+        this.errorCollector.logFinalReport();
+      }
 
     } catch (error: any) {
       Logger.error('CLI execution failed', { error: error.message });

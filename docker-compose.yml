@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database for development
+  postgres:
+    image: postgres:15-alpine
+    container_name: xlsx-migration-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: marketplaces-inhelp
+      POSTGRES_USER: migration_user
+      POSTGRES_PASSWORD: migration_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5433:5432"  # Use different port to avoid conflicts
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U migration_user -d marketplaces-inhelp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - migration_network
+
+  # Migration application
+  xlsx-migration:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: xlsx-migration-app
+    restart: "no"  # Don't restart automatically as this is a one-time operation
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database configuration
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: marketplaces-inhelp
+      DB_USER: migration_user
+      DB_PASSWORD: migration_password
+      DB_SSL: false
+      
+      # Application configuration
+      LOG_LEVEL: info
+      NODE_ENV: production
+      
+      # Google Cloud configuration
+      GOOGLE_CLOUD_PROJECT_ID: mirakl-catalogue-marketplaces
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/service-account.json
+      
+      # Migration configuration
+      BATCH_SIZE: 1000
+      MAX_RETRIES: 3
+      MIGRATION_TIMEOUT: 300000
+    volumes:
+      # Mount logs directory for persistent logging
+      - ./logs:/app/logs
+      # Mount credentials directory
+      - ./credentials:/app/credentials:ro
+      # Mount any custom configuration
+      - ./.env:/app/.env:ro
+    networks:
+      - migration_network
+    profiles:
+      - migration  # Only run when explicitly requested
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: xlsx-migration-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@migration.local
+      PGADMIN_DEFAULT_PASSWORD: admin_password
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - migration_network
+    profiles:
+      - admin  # Only run when explicitly requested
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  migration_network:
+    driver: bridge
