@@ -1,21 +1,19 @@
-// TODO: Uncomment imports once googleapis dependency is installed
-// import { google } from 'googleapis';
-// import { GoogleAuth } from 'google-auth-library';
+import { google } from 'googleapis';
+import { GoogleAuth } from 'google-auth-library';
+import { appConfig } from '../config/environment';
 import { Logger } from '../utils/logger';
 import { ErrorCollector } from '../utils/error-handler';
 
 export class GoogleSheetsService {
-  // TODO: Uncomment once googleapis dependency is installed
-  // private auth: GoogleAuth;
-  // private sheets: any;
+  private auth: GoogleAuth;
+  private sheets: any;
 
   constructor() {
-    // TODO: Initialize once googleapis dependency is installed
-    // this.auth = new google.auth.GoogleAuth({
-    //   keyFile: appConfig.googleCloud.credentialsPath,
-    //   scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-    // });
-    // this.sheets = google.sheets({ version: 'v4', auth: this.auth });
+    this.auth = new google.auth.GoogleAuth({
+      keyFile: appConfig.googleCloud.credentialsPath,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+    this.sheets = google.sheets({ version: 'v4', auth: this.auth });
   }
 
   /**
@@ -56,18 +54,50 @@ export class GoogleSheetsService {
     try {
       Logger.info('Downloading XLSX from Google Sheets', { shareUrl });
 
-      this.convertToExportUrl(shareUrl);
+      const exportUrl = this.convertToExportUrl(shareUrl);
       
-      // Use node fetch or similar to download the file
-      // TODO: Implement actual download logic
-      // const response = await fetch(exportUrl);
-      // if (!response.ok) {
-      //   throw new Error(`Failed to download: ${response.status} ${response.statusText}`);
-      // }
-      // const buffer = Buffer.from(await response.arrayBuffer());
+      // Use built-in https module to download the file
+      const https = await import('https');
+      const { URL } = await import('url');
       
-      // Placeholder implementation
-      throw new Error('XLSX download not implemented yet. Requires fetch API or similar HTTP client.');
+      return new Promise((resolve, reject) => {
+        const url = new URL(exportUrl);
+        const request = https.get(url, (response) => {
+          if (response.statusCode !== 200) {
+            reject(new Error(`Failed to download: ${response.statusCode} ${response.statusMessage}`));
+            return;
+          }
+
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk: Buffer) => {
+            chunks.push(chunk);
+          });
+
+          response.on('end', () => {
+            const buffer = Buffer.concat(chunks);
+            Logger.info('XLSX download completed', { 
+              shareUrl, 
+              bufferSize: buffer.length 
+            });
+            resolve(buffer);
+          });
+
+          response.on('error', (error) => {
+            Logger.error('Response error during download', { shareUrl, error: error.message });
+            reject(error);
+          });
+        });
+
+        request.on('error', (error) => {
+          Logger.error('Request error during download', { shareUrl, error: error.message });
+          reject(error);
+        });
+
+        request.setTimeout(30000, () => {
+          request.destroy();
+          reject(new Error('Download timeout after 30 seconds'));
+        });
+      });
       
     } catch (error: any) {
       Logger.error('Failed to download XLSX from Google Sheets', { 
@@ -87,18 +117,15 @@ export class GoogleSheetsService {
     try {
       Logger.debug('Validating Google Sheets access', { shareUrl });
 
-      // TODO: Implement validation once googleapis is available
-      // const spreadsheetId = this.extractSpreadsheetId(shareUrl);
-      // const response = await this.sheets.spreadsheets.get({
-      //   spreadsheetId,
-      //   fields: 'properties.title',
-      // });
+      const spreadsheetId = this.extractSpreadsheetId(shareUrl);
+      const response = await this.sheets.spreadsheets.get({
+        spreadsheetId,
+        fields: 'properties.title',
+      });
       
-      // return !!response.data;
-      
-      // Placeholder - assume valid for now
-      Logger.debug('Sheet validation placeholder - assuming valid');
-      return true;
+      const isValid = !!response.data;
+      Logger.debug('Sheet validation completed', { shareUrl, isValid, title: response.data?.properties?.title });
+      return isValid;
     } catch (error: any) {
       Logger.error('Sheet validation failed', { shareUrl, error: error.message });
       return false;
@@ -114,36 +141,32 @@ export class GoogleSheetsService {
     try {
       Logger.debug('Getting sheet information', { shareUrl });
 
-      // TODO: Implement once googleapis is available
-      // const spreadsheetId = this.extractSpreadsheetId(shareUrl);
-      // const response = await this.sheets.spreadsheets.get({
-      //   spreadsheetId,
-      //   fields: 'properties.title,sheets.properties.title',
-      // });
+      const spreadsheetId = this.extractSpreadsheetId(shareUrl);
+      const response = await this.sheets.spreadsheets.get({
+        spreadsheetId,
+        fields: 'properties.title,sheets.properties.title',
+      });
 
-      // return {
-      //   title: response.data.properties.title,
-      //   sheetCount: response.data.sheets.length,
-      // };
-
-      // Placeholder
-      return {
-        title: 'Unknown Sheet',
-        sheetCount: 1,
+      const info = {
+        title: response.data.properties.title || 'Unknown Sheet',
+        sheetCount: response.data.sheets?.length || 0,
       };
+
+      Logger.debug('Sheet information retrieved', { shareUrl, info });
+      return info;
     } catch (error: any) {
       Logger.error('Failed to get sheet information', { shareUrl, error: error.message });
       throw error;
     }
   }
 
-  // private extractSpreadsheetId(shareUrl: string): string {
-  //   const match = shareUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  //   if (!match) {
-  //     throw new Error('Invalid Google Sheets URL format');
-  //   }
-  //   return match[1];
-  // }
+  private extractSpreadsheetId(shareUrl: string): string {
+    const match = shareUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (!match) {
+      throw new Error('Invalid Google Sheets URL format');
+    }
+    return match[1];
+  }
 
   /**
    * Validates all configured Google Sheets URLs

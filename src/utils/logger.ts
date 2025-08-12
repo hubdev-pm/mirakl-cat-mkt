@@ -1,4 +1,4 @@
-import winston from 'winston';
+import * as winston from 'winston';
 import { appConfig } from '../config/environment';
 
 export class Logger {
