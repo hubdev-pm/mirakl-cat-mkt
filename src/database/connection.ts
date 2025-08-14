@@ -47,6 +47,10 @@ export class DatabaseConnection {
     }
   }
 
+  async getClient(): Promise<PoolClient> {
+    return this.connect();
+  }
+
   async query(text: string, params?: any[]): Promise<any> {
     const client = await this.connect();
     try {

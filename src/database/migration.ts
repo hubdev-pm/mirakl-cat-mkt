@@ -245,15 +245,15 @@ export class DatabaseMigration {
       return `(${recordPlaceholders.join(', ')})`;
     }).join(', ');
 
-    const conflictAction = options.skipExisting 
-      ? 'ON CONFLICT ("code") DO NOTHING'
-      : 'ON CONFLICT ("code") DO UPDATE SET updated_at = CURRENT_TIMESTAMP';
+    // Since id is auto-increment and unique, we no longer need conflict resolution
+    // Records will be inserted as new entries each time
+    const conflictAction = '';
 
     const sql = `
       INSERT INTO "${tableName}" (${columnsList})
       VALUES ${placeholders}
       ${conflictAction}
-      RETURNING "code"
+      RETURNING "id"
     `;
 
     // Flatten values for parameterized query

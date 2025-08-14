@@ -61,7 +61,7 @@ export function generateCreateTableSQL(tableName: string): string {
   
   return `
 CREATE TABLE IF NOT EXISTS "${tableName}" (
-  id SERIAL PRIMARY KEY,
+  id SERIAL PRIMARY KEY UNIQUE,
   ${columns},
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

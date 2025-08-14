@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Docker run script for XLSX to Database Migration System
-# This script provides convenient commands for Docker operations
+# Enhanced Docker run script for XLSX to Database Migration System
+# This script provides convenient commands for Docker operations with robust migration support
 
 set -e
 
@@ -16,8 +16,8 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-echo -e "${BLUE}XLSX to Database Migration System - Docker Helper${NC}"
-echo "============================================="
+echo -e "${BLUE}XLSX to Database Migration System - Enhanced Docker Helper${NC}"
+echo "==========================================================="
 
 # Check if Docker is running
 if ! docker info > /dev/null 2>&1; then
@@ -34,15 +34,18 @@ show_usage() {
     echo "  build           - Build the migration application image"
     echo "  migrate         - Run migration with all tables"
     echo "  migrate-table   - Run migration for specific table"
+    echo "  migrate-db      - Run database schema migrations only"
     echo "  dry-run         - Run migration in dry-run mode"
     echo "  config-only     - Setup configuration tables only"
     echo "  admin           - Start database admin interface (pgAdmin)"
     echo "  logs            - View migration logs"
     echo "  clean           - Clean up containers and volumes"
     echo "  status          - Show container status"
+    echo "  reset           - Reset entire system (destructive)"
     echo ""
     echo "Examples:"
     echo "  $0 setup                           # Start PostgreSQL for development"
+    echo "  $0 migrate-db                      # Run database schema migrations"
     echo "  $0 migrate                         # Run full migration"
     echo "  $0 migrate-table rules_worten_pt   # Migrate specific table"
     echo "  $0 dry-run                         # Test migration without changes"
@@ -148,6 +151,56 @@ setup_config() {
     run_migration "" "--config-only --verbose"
 }
 
+# Function to run database schema migrations
+run_db_migrations() {
+    echo -e "${YELLOW}Running database schema migrations...${NC}"
+    check_prerequisites
+    
+    cd "$PROJECT_DIR"
+    
+    # Start database if not running
+    docker-compose up -d postgres
+    
+    # Wait for database to be ready
+    echo "Waiting for database to be ready..."
+    sleep 5
+    
+    # Run migrations using npm script
+    npm run migrate
+}
+
+# Function to reset system
+reset_system() {
+    echo -e "${RED}WARNING: This will completely reset the migration system!${NC}"
+    echo "This will:"
+    echo "- Stop all containers"
+    echo "- Remove all volumes and data"
+    echo "- Reset the database completely"
+    echo ""
+    read -p "Are you sure? Type 'yes' to confirm: " -r
+    
+    if [[ $REPLY = "yes" ]]; then
+        echo -e "${YELLOW}Resetting migration system...${NC}"
+        
+        cd "$PROJECT_DIR"
+        
+        # Stop and remove everything
+        docker-compose --profile admin --profile migration down -v
+        
+        # Remove volumes explicitly
+        docker volume rm $(docker volume ls -q | grep mirakl-cat-mkt) 2>/dev/null || true
+        
+        # Clean up any orphaned containers
+        docker container prune -f
+        docker volume prune -f
+        
+        echo -e "${GREEN}System reset completed!${NC}"
+        echo "Run '$0 setup' to start fresh"
+    else
+        echo "Reset cancelled"
+    fi
+}
+
 # Function to start admin interface
 start_admin() {
     echo -e "${YELLOW}Starting database admin interface...${NC}"
@@ -223,6 +276,9 @@ case "${1:-help}" in
     build)
         build_app
         ;;
+    migrate-db)
+        run_db_migrations
+        ;;
     migrate)
         run_migration
         ;;
@@ -251,6 +307,9 @@ case "${1:-help}" in
         ;;
     status)
         show_status
+        ;;
+    reset)
+        reset_system
         ;;
     help|--help|-h)
         show_usage
