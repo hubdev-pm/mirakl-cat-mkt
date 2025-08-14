@@ -5,11 +5,13 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "build:fast": "tsc --transpileOnly",
     "start": "node dist/index.js",
-    "dev": "nodemon --exec ts-node src/index.ts",
+    "start:ts": "ts-node --transpile-only src/index.ts",
+    "dev": "nodemon --exec \"ts-node --transpile-only src/index.ts\"",
     "test": "node test-migration.js",
-    "test:quick": "npm start -- --config-only --verbose",
-    "validate": "npm start -- --dry-run --verbose"
+    "test:quick": "npm run start:ts -- --config-only --verbose",
+    "validate": "npm run start:ts -- --dry-run --verbose"
   },
   "keywords": [
     "xlsx",

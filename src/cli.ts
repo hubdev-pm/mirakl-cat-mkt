@@ -319,7 +319,7 @@ For more information, visit: https://github.com/your-repo/xlsx-database-migratio
       Logger.info('CLI validation passed, starting migration process');
 
       // Import and run the main migration logic
-      const { MigrationService } = await import('../services/migration-service');
+      const { MigrationService } = await import('./services/migration-service');
       const migrationService = new MigrationService(this.errorCollector);
 
       try {

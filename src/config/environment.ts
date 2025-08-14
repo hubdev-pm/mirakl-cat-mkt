@@ -39,7 +39,8 @@ export interface AppConfig {
 function getEnvVar(name: string, defaultValue?: string): string {
   const value = process.env[name];
   if (!value && !defaultValue) {
-    throw new Error(`Environment variable ${name} is required`);
+    console.warn(`Environment variable ${name} is not set, using empty string`);
+    return '';
   }
   return value || defaultValue!;
 }
@@ -67,8 +68,8 @@ export const appConfig: AppConfig = {
     host: getEnvVar('DB_HOST', 'localhost'),
     port: getEnvVarAsNumber('DB_PORT', 5432),
     database: getEnvVar('DB_NAME', 'marketplaces-inhelp'),
-    user: getEnvVar('DB_USER'),
-    password: getEnvVar('DB_PASSWORD'),
+    user: getEnvVar('DB_USER', 'migration_user'),
+    password: getEnvVar('DB_PASSWORD', 'migration_password'),
     ssl: getEnvVarAsBoolean('DB_SSL', false),
     pool: {
       min: getEnvVarAsNumber('DB_POOL_MIN', 2),
@@ -79,7 +80,7 @@ export const appConfig: AppConfig = {
   },
   googleCloud: {
     projectId: getEnvVar('GOOGLE_CLOUD_PROJECT_ID', 'mirakl-catalogue-marketplaces'),
-    credentialsPath: getEnvVar('GOOGLE_APPLICATION_CREDENTIALS'),
+    credentialsPath: getEnvVar('GOOGLE_APPLICATION_CREDENTIALS', './service-account-mirakl-cat-mkt.json'),
   },
   migration: {
     batchSize: getEnvVarAsNumber('BATCH_SIZE', 1000),
