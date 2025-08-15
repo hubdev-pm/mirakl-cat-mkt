@@ -221,6 +221,54 @@ export class MigrationService {
   }
 
   /**
+   * Validates Google Sheets access via HTTP without authentication
+   * @param exportUrl - The XLSX export URL
+   * @returns Promise<boolean> indicating if accessible
+   */
+  private async validateSheetAccessViaHttp(exportUrl: string): Promise<boolean> {
+    try {
+      Logger.debug('Validating sheet access via HTTP HEAD request', { exportUrl });
+      
+      const https = await import('https');
+      const { URL } = await import('url');
+      
+      return new Promise((resolve) => {
+        const url = new URL(exportUrl);
+        const request = https.request({
+          hostname: url.hostname,
+          path: url.pathname + url.search,
+          method: 'HEAD',
+          timeout: 10000,
+        }, (response) => {
+          const isAccessible = response.statusCode === 200;
+          Logger.debug('HTTP validation completed', { 
+            exportUrl, 
+            statusCode: response.statusCode, 
+            isAccessible 
+          });
+          resolve(isAccessible);
+        });
+
+        request.on('error', (error) => {
+          Logger.debug('HTTP validation failed', { exportUrl, error: error.message });
+          resolve(false);
+        });
+
+        request.on('timeout', () => {
+          Logger.debug('HTTP validation timeout', { exportUrl });
+          request.destroy();
+          resolve(false);
+        });
+
+        request.end();
+      });
+    } catch (error: any) {
+      Logger.debug('HTTP validation error', { exportUrl, error: error.message });
+      return false;
+    }
+  }
+
+  /**
    * Process a single table migration
    * @param tableName - Target table name
    * @param sourceUrl - Google Sheets URL
@@ -235,12 +283,8 @@ export class MigrationService {
     const startTime = Date.now();
 
     try {
-      // Step 1: Validate Google Sheets access
-      Logger.debug('Validating Google Sheets access', { tableName, sourceUrl });
-      const isAccessible = await this.googleSheets.validateSheetAccess(sourceUrl);
-      if (!isAccessible) {
-        throw new Error('Google Sheets URL is not accessible');
-      }
+      // Step 1: Skip validation and attempt direct download (authentication handled by download method)
+      Logger.debug('Skipping validation - will attempt direct XLSX download', { tableName, sourceUrl });
 
       // Step 2: Download XLSX data
       Logger.debug('Downloading XLSX data', { tableName });
