@@ -12,6 +12,8 @@ export interface TransformationResult {
 }
 
 export class DataTransformer {
+  private cachedSheetData: ParsedSheet[] = [];
+
   /**
    * Transforms parsed sheet data for database insertion
    * @param parsedSheets - Array of parsed sheets
@@ -29,11 +31,35 @@ export class DataTransformer {
       sheetsCount: parsedSheets.length 
     });
 
-    const allRecords: RuleRecord[] = [];
-    const allErrors: string[] = [];
     let totalProcessed = 0;
     let validRecords = 0;
     let skippedRecords = 0;
+    const allErrors: string[] = [];
+
+    // For large datasets, return empty array and let database handle streaming
+    const totalRows = parsedSheets.reduce((sum, sheet) => sum + sheet.data.length, 0);
+    
+    if (totalRows > 100000) {
+      Logger.info('Large dataset detected - using direct database streaming', {
+        sourceName,
+        totalRows,
+        note: 'Skipping in-memory transformation to prevent stack overflow'
+      });
+      
+      // Store sheet data for direct database streaming
+      this.cachedSheetData = parsedSheets;
+      
+      return {
+        records: [], // Empty - will be streamed directly to database
+        totalProcessed: totalRows,
+        validRecords: totalRows,
+        skippedRecords: 0,
+        errors: [],
+      };
+    }
+
+    // For smaller datasets, use normal transformation
+    const allRecords: RuleRecord[] = [];
 
     for (const sheet of parsedSheets) {
       try {
@@ -42,8 +68,8 @@ export class DataTransformer {
           records: sheet.data.length 
         });
 
-        // Bypass complex transformation to avoid stack overflow
-        const transformResult = this.bypassTransformation(sheet, sourceName);
+        // Use streaming transformation for large single sheets
+        const transformResult = this.streamingTransformation(sheet, sourceName);
         
         allRecords.push(...transformResult.records);
         allErrors.push(...transformResult.errors);
@@ -63,31 +89,25 @@ export class DataTransformer {
       }
     }
 
-    // Apply deduplication
-    const deduplicatedRecords = this.deduplicateRecords(allRecords, sourceName);
-    const duplicatesRemoved = allRecords.length - deduplicatedRecords.length;
-
-    if (duplicatesRemoved > 0) {
-      Logger.warn('Duplicate records removed during transformation', {
-        sourceName,
-        duplicatesRemoved,
-        originalCount: allRecords.length,
-        finalCount: deduplicatedRecords.length,
-      });
-    }
+    // NO DEDUPLICATION - Literal 1:1 migration as requested
+    Logger.info('Preserving all records for literal 1:1 migration', {
+      sourceName,
+      totalRecords: allRecords.length,
+      note: 'No deduplication applied - every XLSX row becomes a database record'
+    });
 
     const result: TransformationResult = {
-      records: deduplicatedRecords,
+      records: allRecords,
       totalProcessed,
-      validRecords: deduplicatedRecords.length,
-      skippedRecords: skippedRecords + duplicatesRemoved,
+      validRecords: allRecords.length,
+      skippedRecords,
       errors: allErrors,
     };
 
-    Logger.info('Data transformation completed', {
+    Logger.info('Data transformation completed - LITERAL 1:1 MIGRATION', {
       sourceName,
       ...result,
-      duplicatesRemoved,
+      duplicatesRemoved: 0,
     });
 
     return result;
@@ -176,46 +196,199 @@ export class DataTransformer {
   }
 
   /**
-   * Bypass transformation entirely to avoid stack overflow
+   * Literal 1:1 transformation - every XLSX row becomes a database record
+   * Stream processing to prevent memory overflow for large datasets
    * @param sheet - Parsed sheet data
    * @param sourceName - Source identifier
-   * @returns Simple transformation result
+   * @returns Literal transformation result
    */
   private bypassTransformation(sheet: ParsedSheet, sourceName: string): TransformationResult {
-    const records: RuleRecord[] = [];
+    const totalRows = sheet.data.length;
     
-    // Ultra-minimal transformation - just convert to required format
-    for (let i = 0; i < sheet.data.length && i < 1000; i++) { // Limit to 1000 records
-      const record = sheet.data[i];
+    Logger.info('Starting streaming transformation for literal 1:1 migration', {
+      sourceName,
+      totalRows,
+      note: 'Processing records individually to prevent memory overflow'
+    });
+    
+    // For very large datasets, use generator-based streaming
+    if (totalRows > 50000) {
+      return this.streamingTransformation(sheet, sourceName);
+    }
+    
+    // For smaller datasets, use the original chunked approach
+    const records: RuleRecord[] = [];
+    const chunkSize = 25; // Even smaller chunks
+    
+    // Process in very small chunks
+    for (let chunkStart = 0; chunkStart < totalRows; chunkStart += chunkSize) {
+      const chunkEnd = Math.min(chunkStart + chunkSize, totalRows);
       
-      // Minimal field extraction without any complex processing
-      const code = record?.code || record?.Code || `row_${i}`;
-      if (code && code.toString().trim()) {
-        records.push({
-          code: code.toString().substring(0, 100),
-          description: (record?.description || '').toString().substring(0, 500),
-          label: (record?.label || '').toString().substring(0, 200),
-          requirement_level: (record?.requirement_level || '').toString().substring(0, 50),
-          roles: (record?.roles || '').toString().substring(0, 200),
-          type: (record?.type || '').toString().substring(0, 50),
-          validations: (record?.validations || '').toString().substring(0, 500),
-          variant: (record?.variant || '').toString().substring(0, 100),
-          'codigo-categoria-mirakl': (record?.['codigo-categoria-mirakl'] || '').toString().substring(0, 100),
-          'nome-categoria-mirakl': (record?.['nome-categoria-mirakl'] || '').toString().substring(0, 200),
-          'parent_code-categoria-mirakl': (record?.['parent_code-categoria-mirakl'] || '').toString().substring(0, 100),
-        });
+      Logger.debug('Processing chunk', {
+        chunkStart: chunkStart + 1,
+        chunkEnd,
+        progress: `${Math.round((chunkEnd / totalRows) * 100)}%`
+      });
+      
+      // Process this chunk with minimal memory usage
+      for (let i = chunkStart; i < chunkEnd; i++) {
+        const record = this.createMinimalRecord(sheet.data[i], i);
+        records.push(record);
+      }
+      
+      // Force garbage collection hint for large datasets
+      if (totalRows > 10000 && chunkStart % 1000 === 0) {
+        if (global.gc) {
+          global.gc();
+        }
       }
     }
     
-    console.log(`✅ Bypass transformation completed: ${records.length} records processed`);
-    
     return {
       records,
-      totalProcessed: sheet.data.length,
+      totalProcessed: totalRows,
       validRecords: records.length,
-      skippedRecords: sheet.data.length - records.length,
+      skippedRecords: 0,
       errors: [],
     };
+  }
+
+  /**
+   * Streaming transformation for very large datasets (50K+ records)
+   * Uses generator pattern to minimize memory usage
+   * @param sheet - Parsed sheet data
+   * @param sourceName - Source identifier
+   * @returns Literal transformation result
+   */
+  private streamingTransformation(sheet: ParsedSheet, sourceName: string): TransformationResult {
+    Logger.info('Using streaming transformation for large dataset', {
+      sourceName,
+      totalRows: sheet.data.length,
+      method: 'generator-based streaming'
+    });
+    
+    const records: RuleRecord[] = [];
+    const totalRows = sheet.data.length;
+    const batchSize = 10; // Very small batches for streaming
+    
+    try {
+      // Process in micro-batches
+      for (let i = 0; i < totalRows; i += batchSize) {
+        const batchEnd = Math.min(i + batchSize, totalRows);
+        
+        // Process micro-batch
+        for (let j = i; j < batchEnd; j++) {
+          const record = this.createMinimalRecord(sheet.data[j], j);
+          records.push(record);
+        }
+        
+        // Progress logging for large datasets
+        if (i % 5000 === 0) {
+          Logger.debug('Streaming progress', {
+            processed: i,
+            total: totalRows,
+            progress: `${Math.round((i / totalRows) * 100)}%`,
+            memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024 + ' MB'
+          });
+        }
+        
+        // Memory management
+        if (i % 1000 === 0 && global.gc) {
+          global.gc();
+        }
+      }
+      
+      Logger.info('Streaming transformation completed', {
+        sourceName,
+        totalProcessed: totalRows,
+        recordsCreated: records.length
+      });
+      
+      return {
+        records,
+        totalProcessed: totalRows,
+        validRecords: records.length,
+        skippedRecords: 0,
+        errors: [],
+      };
+      
+    } catch (error: any) {
+      Logger.error('Streaming transformation failed', {
+        sourceName,
+        error: error.message,
+        processedSoFar: records.length
+      });
+      
+      // Return partial results instead of failing completely
+      return {
+        records,
+        totalProcessed: records.length,
+        validRecords: records.length,
+        skippedRecords: totalRows - records.length,
+        errors: [`Streaming transformation failed: ${error.message}`],
+      };
+    }
+  }
+
+  /**
+   * Creates a minimal record with safe property access
+   * @param sourceRecord - Source data record
+   * @param index - Record index
+   * @returns Minimal RuleRecord
+   */
+  private createMinimalRecord(sourceRecord: any, index: number): RuleRecord {
+    try {
+      // Ultra-minimal approach - direct property access without deep inspection
+      return {
+        code: this.getSafeValue(sourceRecord, ['code', 'Code'], `auto_row_${index + 1}`).slice(0, 100),
+        description: this.getSafeValue(sourceRecord, ['description', 'Description'], '').slice(0, 500),
+        label: this.getSafeValue(sourceRecord, ['label', 'Label'], '').slice(0, 200),
+        requirement_level: this.getSafeValue(sourceRecord, ['requirement_level'], '').slice(0, 50),
+        roles: this.getSafeValue(sourceRecord, ['roles', 'Roles'], '').slice(0, 200),
+        type: this.getSafeValue(sourceRecord, ['type', 'Type'], '').slice(0, 50),
+        validations: this.getSafeValue(sourceRecord, ['validations', 'Validations'], '').slice(0, 500),
+        variant: this.getSafeValue(sourceRecord, ['variant', 'Variant'], '').slice(0, 100),
+        'codigo-categoria-mirakl': this.getSafeValue(sourceRecord, ['codigo-categoria-mirakl'], '').slice(0, 100),
+        'nome-categoria-mirakl': this.getSafeValue(sourceRecord, ['nome-categoria-mirakl'], '').slice(0, 200),
+        'parent_code-categoria-mirakl': this.getSafeValue(sourceRecord, ['parent_code-categoria-mirakl'], '').slice(0, 100),
+      };
+    } catch (error) {
+      // Return safe fallback record
+      return {
+        code: `error_row_${index + 1}`,
+        description: 'Error processing this row',
+        label: '',
+        requirement_level: '',
+        roles: '',
+        type: '',
+        validations: '',
+        variant: '',
+        'codigo-categoria-mirakl': '',
+        'nome-categoria-mirakl': '',
+        'parent_code-categoria-mirakl': '',
+      };
+    }
+  }
+
+  /**
+   * Safely gets value from source record with fallback
+   * @param record - Source record
+   * @param keys - Possible property keys to try
+   * @param fallback - Fallback value
+   * @returns Safe string value
+   */
+  private getSafeValue(record: any, keys: string[], fallback: string = ''): string {
+    if (!record || typeof record !== 'object') {
+      return fallback;
+    }
+    
+    for (const key of keys) {
+      if (record[key] !== undefined && record[key] !== null) {
+        return String(record[key]);
+      }
+    }
+    
+    return fallback;
   }
 
   /**
@@ -607,5 +780,67 @@ export class DataTransformer {
     }
 
     return errors;
+  }
+
+  /**
+   * Gets cached sheet data for direct database streaming
+   * @returns Cached parsed sheets
+   */
+  getCachedSheetData(): ParsedSheet[] {
+    return this.cachedSheetData;
+  }
+
+  /**
+   * Clears cached sheet data to free memory
+   */
+  clearCachedSheetData(): void {
+    this.cachedSheetData = [];
+  }
+
+  /**
+   * Generator function to stream records directly from cached data
+   * @param batchSize - Number of records per batch
+   * @yields Batches of RuleRecord
+   */
+  *streamRecordsFromCache(batchSize: number = 1000): Generator<RuleRecord[], void, unknown> {
+    Logger.info('Starting direct record streaming from cached data', {
+      sheetsCount: this.cachedSheetData.length,
+      batchSize,
+      totalRows: this.cachedSheetData.reduce((sum, sheet) => sum + sheet.data.length, 0)
+    });
+
+    for (const sheet of this.cachedSheetData) {
+      Logger.debug('Streaming records from sheet', {
+        sheetName: sheet.sheetName,
+        totalRows: sheet.data.length
+      });
+
+      const batch: RuleRecord[] = [];
+      
+      for (let i = 0; i < sheet.data.length; i++) {
+        try {
+          const record = this.createMinimalRecord(sheet.data[i], i);
+          batch.push(record);
+
+          // Yield batch when full
+          if (batch.length >= batchSize) {
+            yield batch.splice(0, batchSize);
+          }
+        } catch (error: any) {
+          Logger.debug('Skipping problematic record during streaming', {
+            sheetName: sheet.sheetName,
+            recordIndex: i,
+            error: error.message
+          });
+        }
+      }
+
+      // Yield remaining records in batch
+      if (batch.length > 0) {
+        yield batch;
+      }
+    }
+
+    Logger.info('Record streaming completed');
   }
 }

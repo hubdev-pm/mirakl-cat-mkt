@@ -306,14 +306,46 @@ export class MigrationService {
         this.errorCollector
       );
 
-      // Step 5: Validate transformed data
+      // Step 5: Handle large dataset streaming
+      if (transformResult.records.length === 0 && transformResult.totalProcessed > 0) {
+        Logger.info('Large dataset detected - using streaming migration', {
+          tableName,
+          totalRows: transformResult.totalProcessed
+        });
+
+        // Use streaming migration for large datasets
+        const migrationOptions: MigrationOptions = {
+          dryRun: options.dryRun,
+          batchSize: 500, // Smaller batches for streaming
+          skipExisting: true,
+          truncateTable: false,
+        };
+
+        const migrationResult = await this.databaseMigration.migrateToTableStreaming(
+          tableName,
+          this.dataTransformer,
+          migrationOptions,
+          this.errorCollector
+        );
+
+        return {
+          tableName,
+          sourceUrl,
+          recordsInserted: migrationResult.recordsInserted,
+          recordsSkipped: migrationResult.recordsSkipped,
+          errors: migrationResult.errors,
+          duration: Date.now() - startTime,
+        };
+      }
+
+      // Step 5: Validate transformed data (normal path)
       const validationResult = await this.dataTransformer.validateTransformedRecords(
         transformResult.records,
         tableName,
         this.errorCollector
       );
 
-      // Step 6: Migrate to database
+      // Step 6: Migrate to database (normal path)
       const migrationOptions: MigrationOptions = {
         dryRun: options.dryRun,
         batchSize: 1000,

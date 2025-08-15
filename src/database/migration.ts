@@ -137,6 +137,178 @@ export class DatabaseMigration {
   }
 
   /**
+   * Migrates large datasets using streaming approach
+   * @param tableName - Target table name
+   * @param dataTransformer - Data transformer with cached data
+   * @param options - Migration options
+   * @param errorCollector - Error collector instance
+   * @returns Migration result
+   */
+  async migrateToTableStreaming(
+    tableName: string,
+    dataTransformer: any, // DataTransformer type
+    options: MigrationOptions,
+    errorCollector: ErrorCollector
+  ): Promise<MigrationResult> {
+    const startTime = Date.now();
+    
+    try {
+      Logger.info('Starting streaming table migration', { 
+        tableName, 
+        options,
+        note: 'Processing large dataset with memory-efficient streaming'
+      });
+
+      // Create table if it doesn't exist
+      await this.createRuleTable(tableName, errorCollector);
+
+      // Truncate table if requested
+      if (options.truncateTable && !options.dryRun) {
+        await this.truncateTable(tableName);
+      }
+
+      // Perform streaming migration
+      const result = await this.insertRecordsStreaming(tableName, dataTransformer, options, errorCollector);
+
+      const duration = Date.now() - startTime;
+      const finalResult: MigrationResult = {
+        ...result,
+        duration,
+      };
+
+      // Clear cached data to free memory
+      dataTransformer.clearCachedSheetData();
+
+      Logger.info('Streaming table migration completed', { tableName, ...finalResult });
+      return finalResult;
+
+    } catch (error: any) {
+      const duration = Date.now() - startTime;
+      const message = `Streaming migration failed for table ${tableName}`;
+      Logger.error(message, { error: error.message, tableName, duration });
+      errorCollector.addError('DatabaseMigration', message, { tableName, error: error.message });
+
+      // Clear cached data even on error
+      dataTransformer.clearCachedSheetData();
+
+      return {
+        tableName,
+        recordsInserted: 0,
+        recordsSkipped: 0,
+        errors: [error.message],
+        duration,
+      };
+    }
+  }
+
+  /**
+   * Inserts records using streaming approach for large datasets
+   * @param tableName - Target table name
+   * @param dataTransformer - Data transformer with cached data
+   * @param options - Migration options
+   * @param errorCollector - Error collector instance
+   * @returns Insertion results
+   */
+  private async insertRecordsStreaming(
+    tableName: string,
+    dataTransformer: any, // DataTransformer type
+    options: MigrationOptions,
+    errorCollector: ErrorCollector
+  ): Promise<Omit<MigrationResult, 'duration'>> {
+    const batchSize = options.batchSize || 500; // Smaller batches for streaming
+    const errors: string[] = [];
+    let recordsInserted = 0;
+    let recordsSkipped = 0;
+    let batchNumber = 0;
+
+    if (options.dryRun) {
+      Logger.info('Dry run mode - streaming without database changes', { tableName });
+      
+      // Count records in dry run mode
+      let totalRecords = 0;
+      for (const batch of dataTransformer.streamRecordsFromCache(batchSize)) {
+        totalRecords += batch.length;
+      }
+      
+      return {
+        tableName,
+        recordsInserted: totalRecords,
+        recordsSkipped: 0,
+        errors: [],
+      };
+    }
+
+    try {
+      // Stream records in batches
+      for (const batch of dataTransformer.streamRecordsFromCache(batchSize)) {
+        batchNumber++;
+        
+        try {
+          Logger.debug('Processing streaming batch', { 
+            tableName, 
+            batchNumber, 
+            batchSize: batch.length,
+            recordsProcessedSoFar: recordsInserted + recordsSkipped
+          });
+
+          const result = await this.insertBatch(tableName, batch, options.skipExisting || false);
+          recordsInserted += result.inserted;
+          recordsSkipped += result.skipped;
+
+          // Log progress for large datasets
+          if (batchNumber % 10 === 0) {
+            Logger.info('Streaming migration progress', {
+              tableName,
+              batchesProcessed: batchNumber,
+              recordsInserted,
+              recordsSkipped,
+              memoryUsage: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+            });
+          }
+
+        } catch (batchError: any) {
+          Logger.error('Streaming batch failed', { 
+            tableName, 
+            batchNumber, 
+            error: batchError.message 
+          });
+          errors.push(`Batch ${batchNumber}: ${batchError.message}`);
+          recordsSkipped += batch.length;
+        }
+      }
+
+      Logger.info('Streaming insertion completed', {
+        tableName,
+        totalBatches: batchNumber,
+        recordsInserted,
+        recordsSkipped,
+        errors: errors.length
+      });
+
+      return {
+        tableName,
+        recordsInserted,
+        recordsSkipped,
+        errors,
+      };
+
+    } catch (error: any) {
+      Logger.error('Streaming insertion failed', { 
+        tableName, 
+        error: error.message,
+        batchesProcessed: batchNumber
+      });
+      
+      return {
+        tableName,
+        recordsInserted,
+        recordsSkipped,
+        errors: [error.message],
+      };
+    }
+  }
+
+  /**
    * Inserts records into a table with batching
    * @param tableName - Target table name
    * @param records - Records to insert
