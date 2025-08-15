@@ -127,54 +127,89 @@ export class GoogleSheetsService {
   }
 
   /**
-   * Fallback method for direct HTTP download (original implementation)
+   * Fallback method for direct HTTP download with redirect handling
    * @param shareUrl - The Google Sheets sharing URL
    * @returns Buffer containing the XLSX data
    */
   private async downloadXLSXDirect(shareUrl: string): Promise<Buffer> {
     const exportUrl = this.convertToExportUrl(shareUrl);
-    
-    // Use built-in https module to download the file
+    return this.followRedirectsForXLSX(exportUrl, 5);
+  }
+
+  /**
+   * Follows redirects for XLSX download
+   * @param url - The URL to fetch
+   * @param maxRedirects - Maximum redirects to follow
+   * @returns Promise<Buffer> XLSX data
+   */
+  private async followRedirectsForXLSX(url: string, maxRedirects: number): Promise<Buffer> {
+    if (maxRedirects <= 0) {
+      throw new Error('Too many redirects');
+    }
+
     const https = await import('https');
     const { URL } = await import('url');
     
     return new Promise((resolve, reject) => {
-      const url = new URL(exportUrl);
-      const request = https.get(url, (response) => {
-        if (response.statusCode !== 200) {
-          reject(new Error(`Failed to download: ${response.statusCode} ${response.statusMessage}`));
+      const urlObj = new URL(url);
+      const request = https.request({
+        hostname: urlObj.hostname,
+        path: urlObj.pathname + urlObj.search,
+        method: 'GET',
+        headers: {
+          'User-Agent': 'XLSX-Migration-Tool/1.0.0'
+        }
+      }, async (response) => {
+        // Handle redirects (3xx status codes)
+        if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
+          const location = response.headers.location;
+          if (location) {
+            Logger.debug('Following XLSX redirect', { 
+              from: url, 
+              to: location, 
+              statusCode: response.statusCode,
+              redirectsRemaining: maxRedirects - 1
+            });
+            try {
+              const buffer = await this.followRedirectsForXLSX(location, maxRedirects - 1);
+              resolve(buffer);
+            } catch (error) {
+              reject(error);
+            }
+            return;
+          }
+        }
+
+        // Handle successful response
+        if (response.statusCode === 200) {
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk: Buffer) => {
+            chunks.push(chunk);
+          });
+
+          response.on('end', () => {
+            const buffer = Buffer.concat(chunks);
+            Logger.debug('XLSX direct download completed', { 
+              url, 
+              bufferSize: buffer.length 
+            });
+            resolve(buffer);
+          });
+
+          response.on('error', reject);
           return;
         }
 
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk: Buffer) => {
-          chunks.push(chunk);
-        });
-
-        response.on('end', () => {
-          const buffer = Buffer.concat(chunks);
-          Logger.info('XLSX direct download completed', { 
-            shareUrl, 
-            bufferSize: buffer.length 
-          });
-          resolve(buffer);
-        });
-
-        response.on('error', (error) => {
-          Logger.error('Response error during direct download', { shareUrl, error: error.message });
-          reject(error);
-        });
+        // Handle error responses
+        reject(new Error(`Failed to download: ${response.statusCode} ${response.statusMessage}`));
       });
 
-      request.on('error', (error) => {
-        Logger.error('Request error during direct download', { shareUrl, error: error.message });
-        reject(error);
-      });
-
+      request.on('error', reject);
       request.setTimeout(30000, () => {
         request.destroy();
         reject(new Error('Download timeout after 30 seconds'));
       });
+      request.end();
     });
   }
 
@@ -319,36 +354,92 @@ export class GoogleSheetsService {
   }
 
   /**
-   * Downloads CSV data using authenticated request
+   * Downloads CSV data using authenticated request with redirect handling
    * @param spreadsheetId - The Google Sheets spreadsheet ID
    * @param accessToken - The OAuth2 access token
+   * @param maxRedirects - Maximum number of redirects to follow (default 5)
    * @returns Promise<string> CSV data
    */
-  private async downloadCSVWithAuth(spreadsheetId: string, accessToken: string): Promise<string> {
+  private async downloadCSVWithAuth(
+    spreadsheetId: string, 
+    accessToken: string, 
+    maxRedirects: number = 5
+  ): Promise<string> {
     const https = await import('https');
     const { URL } = await import('url');
 
     const exportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv`;
     
+    return this.followRedirects(exportUrl, accessToken, maxRedirects);
+  }
+
+  /**
+   * Follows HTTP redirects to download CSV data
+   * @param url - The URL to fetch
+   * @param accessToken - The OAuth2 access token
+   * @param maxRedirects - Maximum redirects to follow
+   * @returns Promise<string> CSV data
+   */
+  private async followRedirects(
+    url: string, 
+    accessToken: string, 
+    maxRedirects: number
+  ): Promise<string> {
+    if (maxRedirects <= 0) {
+      throw new Error('Too many redirects');
+    }
+
+    const https = await import('https');
+    const { URL } = await import('url');
+    
     return new Promise((resolve, reject) => {
-      const url = new URL(exportUrl);
+      const urlObj = new URL(url);
       const request = https.request({
-        hostname: url.hostname,
-        path: url.pathname + url.search,
+        hostname: urlObj.hostname,
+        path: urlObj.pathname + urlObj.search,
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${accessToken}`
+          'Authorization': `Bearer ${accessToken}`,
+          'User-Agent': 'XLSX-Migration-Tool/1.0.0'
         }
-      }, (response) => {
-        if (response.statusCode !== 200) {
-          reject(new Error(`Failed to download CSV: ${response.statusCode} ${response.statusMessage}`));
+      }, async (response) => {
+        // Handle redirects (3xx status codes)
+        if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
+          const location = response.headers.location;
+          if (location) {
+            Logger.debug('Following redirect', { 
+              from: url, 
+              to: location, 
+              statusCode: response.statusCode,
+              redirectsRemaining: maxRedirects - 1
+            });
+            try {
+              const data = await this.followRedirects(location, accessToken, maxRedirects - 1);
+              resolve(data);
+            } catch (error) {
+              reject(error);
+            }
+            return;
+          }
+        }
+
+        // Handle successful response
+        if (response.statusCode === 200) {
+          let data = '';
+          response.on('data', chunk => data += chunk);
+          response.on('end', () => {
+            Logger.debug('CSV download completed', { 
+              url, 
+              dataSize: data.length 
+            });
+            resolve(data);
+          });
+          response.on('error', reject);
           return;
         }
 
-        let data = '';
-        response.on('data', chunk => data += chunk);
-        response.on('end', () => resolve(data));
-        response.on('error', reject);
+        // Handle error responses
+        reject(new Error(`Failed to download CSV: ${response.statusCode} ${response.statusMessage}`));
       });
 
       request.on('error', reject);
